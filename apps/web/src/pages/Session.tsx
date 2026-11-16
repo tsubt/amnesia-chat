@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { AmnesiaControls } from "../components/AmnesiaControls";
 import { ChatTranscript } from "../components/ChatTranscript";
@@ -14,22 +14,29 @@ type Props = {
   rejoinRole?: Role;
 };
 
-export function Session({ mode, rejoinRole = "d" }: Props) {
-  const { code: codeParam } = useParams();
-  const [search] = useSearchParams();
-  const keyFromUrl = readInviteKey(search);
-  const sideRef = useRef<HTMLDetailsElement>(null);
+function useDesktopInviteOpen() {
+  const [open, setOpen] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      window.matchMedia("(min-width: 861px)").matches,
+  );
 
-  // Desktop: keep invite panel open. Mobile: collapsed so chat fills the viewport.
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 861px)");
-    const sync = () => {
-      if (sideRef.current) sideRef.current.open = mq.matches;
-    };
+    const sync = () => setOpen(mq.matches);
     sync();
     mq.addEventListener("change", sync);
     return () => mq.removeEventListener("change", sync);
   }, []);
+
+  return [open, setOpen] as const;
+}
+
+export function Session({ mode, rejoinRole = "d" }: Props) {
+  const { code: codeParam } = useParams();
+  const [search] = useSearchParams();
+  const keyFromUrl = readInviteKey(search);
+  const [inviteOpen, setInviteOpen] = useDesktopInviteOpen();
 
   // Update the URL without remounting so the create socket stays D.
   const onCreated = useCallback(
@@ -121,7 +128,11 @@ export function Session({ mode, rejoinRole = "d" }: Props) {
 
         {role === "d" && sessionKeyStr && (
           <aside className="side-panel">
-            <details className="side-drawer" ref={sideRef}>
+            <details
+              className="side-drawer"
+              open={inviteOpen}
+              onToggle={(e) => setInviteOpen(e.currentTarget.open)}
+            >
               <summary>Invite &amp; amnesia</summary>
               <div className="side-drawer-body">
                 <SharePanel code={code} sessionKey={sessionKeyStr} />
