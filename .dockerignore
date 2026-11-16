@@ -8,3 +8,5 @@ apps/web/src/**/*.test.*
 .env
 .env.*
 !**/.env.example
+apps/web/.env.development
+apps/web/dist
