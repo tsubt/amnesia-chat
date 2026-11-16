@@ -65,6 +65,8 @@ export function Session({ mode, rejoinRole = "d" }: Props) {
     sessionKeyStr,
     sendChat,
     updateSettings,
+    toggleReveal,
+    completeSeal,
     reconnect,
   } = session;
 
@@ -117,7 +119,13 @@ export function Session({ mode, rejoinRole = "d" }: Props) {
 
       <div className={`session-layout ${role === "d" ? "with-side" : ""}`}>
         <section className="chat-panel">
-          <ChatTranscript messages={messages} role={role} settings={settings} />
+          <ChatTranscript
+            messages={messages}
+            role={role}
+            settings={settings}
+            onToggleReveal={role === "d" ? toggleReveal : undefined}
+            onSealComplete={role === "s" ? completeSeal : undefined}
+          />
           <Composer
             role={role}
             settings={settings}

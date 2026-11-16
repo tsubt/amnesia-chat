@@ -1,6 +1,8 @@
 # Amnesia Chat
 
-Asymmetrical two-person chat. **D** keeps a normal history. **S** watches their own past dissolve — letter scramble + blur — under D’s control.
+Asymmetrical two-person chat. **D** keeps a normal history. **S** watches their own past dissolve — typing veil + sealed letter scramble — under D’s control.
+
+**Seal flow (S → D):** S queues plaintext in `sessionStorage` until the peer is online (orange), then sends AES room-key encrypted chat (green). D generates the sealed scramble and returns it; S letter-swaps to the sealed form, drops plaintext, and acks. D shows a padlock and can reveal / re-seal. Transit stays cooperative AES; D is authoritative for the sealed text S keeps.
 
 The server is a tiny WebSocket relay only: room create/join and opaque encrypted frames. No message database.
 
@@ -15,7 +17,7 @@ npm run dev:web      # terminal 2 — http://localhost:5173
 1. Open the web app → **Start as D**
 2. Share the code, copy-link, or QR with S
 3. S opens the invite link (includes the encryption key) and chats
-4. D tunes amnesia on/off, clear-word window, scramble, and blur
+4. D tunes amnesia on/off, clear/fade letter windows, and scramble
 
 ## Architecture
 
@@ -30,9 +32,13 @@ Refreshing as D uses `/session/:CODE#k=...` and rejoins the same room if it stil
 
 ### Frame types (v1)
 
-- `chat` — committed message  
+- `chat` — plaintext message body  
+- `sealed` — D → S sealed scramble for an S message  
+- `seal_ack` — S → D after plaintext dropped  
+- `reveal` / `reseal` — D toggles S’s view of a sealed line  
 - `settings` — amnesia config from D → S  
 - `presence` — peer ready  
+- `history` — D pushes transcript (S lines as sealed unless currently revealed)  
 - reserved for later: `draft`, `draft_flush` (live typing)
 
 ## Deploy (Railway)
@@ -45,7 +51,7 @@ One service serves the SPA and the WebSocket relay on the same `PORT` (see `Dock
 - Railway sets `PORT`; the container listens on `0.0.0.0:$PORT`
 - Optional: set `STATIC_DIR` if the UI build lives somewhere else
 
-Rooms live in memory on the relay (lost on restart). D can **reclaim** the same room code after a restart; when S reconnects, D pushes local chat history over the encrypted channel. D’s plaintext history is in `localStorage`; S only caches mangled display text.
+Rooms live in memory on the relay (lost on restart). D can **reclaim** the same room code after a restart; when S reconnects, D pushes local chat history over the encrypted channel. D’s plaintext history is in `localStorage`; S only caches sealed forms of their own lines (plus D’s clear messages). Pending S sends live in `sessionStorage` outbox until sealed.
 
 ## Scope
 

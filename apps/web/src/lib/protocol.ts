@@ -1,21 +1,41 @@
 export type Role = "d" | "s";
 
+export type DeliveryState = "queued" | "sent" | "sealing" | "sealed" | "revealed";
+
 export type AmnesiaSettings = {
   enabled: boolean;
-  /** Words that stay clear at the end of S's text */
-  clearWords: number;
-  /** 0–1 letter swap intensity on mangled region */
+  /** Trailing letters that stay fully clear while typing */
+  clearLetters: number;
+  /** Letters before the clear window that ramp from clear → veiled */
+  fadeLetters: number;
+  /** 0–1 letter swap intensity on sealed (sent) text */
   scramble: number;
-  /** CSS blur in px applied to mangled region */
-  blurPx: number;
 };
 
 export const DEFAULT_AMNESIA: AmnesiaSettings = {
   enabled: true,
-  clearWords: 3,
+  clearLetters: 10,
+  fadeLetters: 20,
   scramble: 0.85,
-  blurPx: 3.5,
 };
+
+/** Accept legacy clearWords/blurPx from older sessions. */
+export function normalizeSettings(
+  raw: Partial<AmnesiaSettings> & {
+    clearWords?: number;
+    blurPx?: number;
+  } = {},
+): AmnesiaSettings {
+  return {
+    enabled: raw.enabled ?? DEFAULT_AMNESIA.enabled,
+    clearLetters:
+      raw.clearLetters ??
+      raw.clearWords ??
+      DEFAULT_AMNESIA.clearLetters,
+    fadeLetters: raw.fadeLetters ?? DEFAULT_AMNESIA.fadeLetters,
+    scramble: raw.scramble ?? DEFAULT_AMNESIA.scramble,
+  };
+}
 
 /** Inner encrypted application frames */
 export type AppFrame =
@@ -25,6 +45,33 @@ export type AppFrame =
       id: string;
       from: Role;
       text: string;
+      ts: number;
+    }
+  | {
+      v: 1;
+      type: "sealed";
+      id: string;
+      sealedText: string;
+      ts: number;
+    }
+  | {
+      v: 1;
+      type: "seal_ack";
+      id: string;
+      ts: number;
+    }
+  | {
+      v: 1;
+      type: "reveal";
+      id: string;
+      text: string;
+      ts: number;
+    }
+  | {
+      v: 1;
+      type: "reseal";
+      id: string;
+      sealedText: string;
       ts: number;
     }
   | {
@@ -48,6 +95,9 @@ export type AppFrame =
         from: Role;
         text: string;
         ts: number;
+        /** Present for S-authored lines when sealed */
+        sealedText?: string;
+        delivery?: DeliveryState;
       }>;
       ts: number;
     }
@@ -70,11 +120,12 @@ export type AppFrame =
 export type ChatMessage = {
   id: string;
   from: Role;
+  /** Display / canonical text depending on role and delivery */
   text: string;
-  /** For S own messages: already-mangled display string */
-  displayText?: string;
-  /** In-memory only for S during the live session (never persisted) */
+  sealedText?: string;
+  /** S only while queued/sent — never persisted after seal */
   plainText?: string;
+  delivery?: DeliveryState;
   ts: number;
 };
 

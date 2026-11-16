@@ -1,23 +1,102 @@
-import { useEffect, useRef } from "react";
-import { AmnesiaText } from "./AmnesiaText";
-import { sealedSettings } from "../lib/amnesia";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { morphText } from "../lib/sealAnim";
 import type { AmnesiaSettings, ChatMessage, Role } from "../lib/protocol";
 
 type Props = {
   messages: ChatMessage[];
   role: Role;
   settings: AmnesiaSettings;
+  onToggleReveal?: (id: string) => void;
+  onSealComplete?: (id: string) => void;
 };
 
-export function ChatTranscript({ messages, role, settings }: Props) {
+function DeliveryDot({
+  state,
+}: {
+  state: ChatMessage["delivery"];
+}) {
+  if (!state || state === "revealed") return null;
+  if (state === "queued") {
+    return (
+      <span
+        className="delivery-dot delivery-queued"
+        title="Queued — waiting for peer"
+        aria-label="Queued"
+      />
+    );
+  }
+  if (state === "sent" || state === "sealing") {
+    return (
+      <span
+        className="delivery-dot delivery-sent"
+        title="Delivered"
+        aria-label="Delivered"
+      />
+    );
+  }
+  return null;
+}
+
+function SealMorph({
+  from,
+  to,
+  onDone,
+}: {
+  from: string;
+  to: string;
+  onDone: () => void;
+}) {
+  const [display, setDisplay] = useState(from);
+  const doneRef = useRef(false);
+  const onDoneRef = useRef(onDone);
+  onDoneRef.current = onDone;
+
+  useEffect(() => {
+    doneRef.current = false;
+    let cancelled = false;
+    const duration = 1600;
+    const start = performance.now();
+    let raf = 0;
+
+    const tick = (now: number) => {
+      if (cancelled) return;
+      const t = Math.min(1, (now - start) / duration);
+      setDisplay(morphText(from, to, t));
+      if (t < 1) {
+        raf = requestAnimationFrame(tick);
+      } else if (!doneRef.current) {
+        doneRef.current = true;
+        onDoneRef.current();
+      }
+    };
+
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      // Do not call onDone here — Strict Mode remounts would skip the morph.
+    };
+  }, [from, to]);
+
+  return (
+    <p className="bubble-body seal-morph seal-mono">{display}</p>
+  );
+}
+
+export function ChatTranscript({
+  messages,
+  role,
+  settings,
+  onToggleReveal,
+  onSealComplete,
+}: Props) {
   const scrollerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
-    // Scroll only the transcript pane — never the document (avoids mobile jump).
     el.scrollTop = el.scrollHeight;
-  }, [messages.length]);
+  }, [messages]);
 
   return (
     <div className="transcript" role="log" aria-live="polite" ref={scrollerRef}>
@@ -27,8 +106,43 @@ export function ChatTranscript({ messages, role, settings }: Props) {
       {messages.map((m) => {
         const mine = m.from === role;
         const isSOwn = role === "s" && m.from === "s";
-        const forget = isSOwn && settings.enabled;
-        const sealed = sealedSettings(settings);
+        const isDViewingS = role === "d" && m.from === "s";
+        const delivery = m.delivery;
+        const showPadlock =
+          isDViewingS &&
+          settings.enabled &&
+          (delivery === "sealed" || delivery === "revealed");
+        const showGreen =
+          isDViewingS && (delivery === "sent" || delivery === "sealed");
+
+        let body: ReactNode;
+
+        if (isSOwn && delivery === "sealing" && m.plainText && m.sealedText) {
+          body = (
+            <SealMorph
+              from={m.plainText}
+              to={m.sealedText}
+              onDone={() => onSealComplete?.(m.id)}
+            />
+          );
+        } else if (
+          isSOwn &&
+          (delivery === "queued" || delivery === "sent") &&
+          m.plainText
+        ) {
+          // Clear plaintext until D's seal morph — no history blur
+          body = <p className="bubble-body seal-mono">{m.plainText}</p>;
+        } else if (isSOwn && delivery === "revealed") {
+          body = <p className="bubble-body">{m.text}</p>;
+        } else if (isSOwn && (m.sealedText || delivery === "sealed")) {
+          body = (
+            <p className="bubble-body seal-mono amnesia-scrambled">
+              {m.sealedText ?? m.text}
+            </p>
+          );
+        } else {
+          body = <p className="bubble-body">{m.text}</p>;
+        }
 
         return (
           <article
@@ -43,30 +157,40 @@ export function ChatTranscript({ messages, role, settings }: Props) {
                   minute: "2-digit",
                 })}
               </time>
+              {isSOwn && (
+                <span className="bubble-status">
+                  <DeliveryDot state={delivery} />
+                </span>
+              )}
+              {isDViewingS && (showGreen || showPadlock) && (
+                <span className="bubble-status">
+                  {showPadlock ? (
+                    <button
+                      type="button"
+                      className={`padlock ${delivery === "revealed" ? "padlock-open" : ""}`}
+                      title={
+                        delivery === "revealed" ? "Re-seal for S" : "Reveal to S"
+                      }
+                      aria-label={
+                        delivery === "revealed"
+                          ? "Re-seal message"
+                          : "Reveal message"
+                      }
+                      onClick={() => onToggleReveal?.(m.id)}
+                    >
+                      <span className="padlock-icon" aria-hidden />
+                    </button>
+                  ) : (
+                    <span
+                      className="delivery-dot delivery-sent"
+                      title="Received"
+                      aria-label="Received"
+                    />
+                  )}
+                </span>
+              )}
             </header>
-            {forget && m.plainText ? (
-              <AmnesiaText
-                text={m.plainText}
-                settings={settings}
-                seed={m.id}
-                apply
-                scrambleLetters
-                mode="sealed"
-                className="bubble-body"
-              />
-            ) : forget ? (
-              <p
-                className="bubble-body amnesia-mangled"
-                style={{
-                  filter: `blur(${sealed.blurPx}px)`,
-                  opacity: 0.55,
-                }}
-              >
-                {m.displayText ?? m.text}
-              </p>
-            ) : (
-              <p className="bubble-body">{m.displayText ?? m.text}</p>
-            )}
+            {body}
           </article>
         );
       })}

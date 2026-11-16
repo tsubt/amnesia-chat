@@ -21,19 +21,35 @@ export function AmnesiaControls({ settings, onChange }: Props) {
       </label>
 
       <label className="slider">
-        <span>Clear words</span>
+        <span>Clear letters</span>
         <input
           type="range"
           min={0}
-          max={12}
+          max={40}
           step={1}
-          value={settings.clearWords}
+          value={settings.clearLetters}
           disabled={!settings.enabled}
           onChange={(e) =>
-            onChange({ ...settings, clearWords: Number(e.target.value) })
+            onChange({ ...settings, clearLetters: Number(e.target.value) })
           }
         />
-        <em>{settings.clearWords}</em>
+        <em>{settings.clearLetters}</em>
+      </label>
+
+      <label className="slider">
+        <span>Fade letters</span>
+        <input
+          type="range"
+          min={0}
+          max={60}
+          step={1}
+          value={settings.fadeLetters}
+          disabled={!settings.enabled}
+          onChange={(e) =>
+            onChange({ ...settings, fadeLetters: Number(e.target.value) })
+          }
+        />
+        <em>{settings.fadeLetters}</em>
       </label>
 
       <label className="slider">
@@ -50,22 +66,6 @@ export function AmnesiaControls({ settings, onChange }: Props) {
           }
         />
         <em>{Math.round(settings.scramble * 100)}%</em>
-      </label>
-
-      <label className="slider">
-        <span>Blur</span>
-        <input
-          type="range"
-          min={0}
-          max={6}
-          step={0.25}
-          value={settings.blurPx}
-          disabled={!settings.enabled}
-          onChange={(e) =>
-            onChange({ ...settings, blurPx: Number(e.target.value) })
-          }
-        />
-        <em>{settings.blurPx.toFixed(2)}px</em>
       </label>
     </section>
   );

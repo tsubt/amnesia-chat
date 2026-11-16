@@ -347,11 +347,15 @@ a {
 
 .bubble-meta {
   display: flex;
-  justify-content: space-between;
-  gap: 1rem;
+  align-items: center;
+  gap: 0.45rem;
   font-size: 0.7rem;
   color: var(--ink-soft);
   margin-bottom: 0.25rem;
+}
+
+.bubble-meta time {
+  margin-left: auto;
 }
 
 .bubble-role {
@@ -366,11 +370,116 @@ a {
   line-height: 1.45;
 }
 
-/* filter does not reliably apply to inline spans */
-.amnesia-mangled {
+.amnesia-scrambled {
+  letter-spacing: 0.01em;
+  color: color-mix(in oklab, var(--ink) 78%, var(--ink-soft));
+}
+
+.amnesia-veil-char {
+  position: relative;
   display: inline-block;
-  letter-spacing: 0.02em;
-  will-change: filter;
+}
+
+.amnesia-veil-glyph {
+  position: relative;
+  z-index: 0;
+}
+
+.amnesia-veil-tile {
+  position: absolute;
+  inset: -1px;
+  z-index: 1;
+  background: #fff;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.seal-mono,
+.seal-morph {
+  font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  font-variant-ligatures: none;
+  letter-spacing: 0;
+}
+
+.bubble-status {
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+}
+
+.delivery-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.delivery-queued {
+  background: #e08a3a;
+  box-shadow: 0 0 0 0 color-mix(in oklab, #e08a3a 55%, transparent);
+  animation: pulse-orange 1.4s ease-out infinite;
+}
+
+.delivery-sent {
+  background: #3f9b6a;
+}
+
+@keyframes pulse-orange {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, #e08a3a 50%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.padlock {
+  width: 1rem;
+  height: 1rem;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  display: grid;
+  place-items: center;
+  background: transparent;
+}
+
+.padlock:hover:not(:disabled) {
+  transform: none;
+  background: transparent;
+  opacity: 0.75;
+}
+
+.padlock-icon {
+  width: 0.5rem;
+  height: 0.4rem;
+  border: 1.5px solid var(--sage-deep);
+  border-radius: 2px;
+  position: relative;
+  display: block;
+}
+
+.padlock-icon::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -0.35rem;
+  width: 0.34rem;
+  height: 0.3rem;
+  border: 1.5px solid var(--sage-deep);
+  border-bottom: none;
+  border-radius: 0.25rem 0.25rem 0 0;
+  transform: translateX(-50%);
+}
+
+.padlock-open .padlock-icon::before {
+  transform: translateX(-20%) rotate(-28deg);
+  transform-origin: bottom left;
 }
 
 .composer {

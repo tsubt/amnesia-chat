@@ -39,26 +39,69 @@ export type AmnesiaSegment = {
 };
 
 export type AmnesiaOptions = {
-  /** When false, keep real letters and only mark the faded region (for blur). */
+  /** When false, keep real letters (composer veil / display). */
   scrambleLetters?: boolean;
   /**
-   * composer — last N words stay clear (typing).
-   * sealed — entire message is unreadable (sent history).
+   * composer — trailing clear + fade window (letter-based).
+   * sealed — entire message scrambled.
    */
   mode?: "composer" | "sealed";
 };
 
-/** Settings used for a sealed (sent) S message — fully unreadable. */
+/** Settings used for a sealed (sent) S message — full scramble, no clear window. */
 export function sealedSettings(settings: AmnesiaSettings): AmnesiaSettings {
   return {
     ...settings,
-    clearWords: 0,
+    clearLetters: 0,
+    fadeLetters: 0,
     scramble: Math.max(settings.scramble, 0.95),
-    blurPx: Math.max(settings.blurPx, 4),
   };
 }
 
-/** Split text into faded prefix + clear suffix by word count. */
+/**
+ * How far behind the clear “leader” a char is, 0 → 1.
+ * 0 inside the clear window; ramps across fadeLetters; 1 beyond that.
+ */
+export function composerVeilProgress(
+  index: number,
+  length: number,
+  settings: AmnesiaSettings,
+): number {
+  if (!settings.enabled || length <= 0) return 0;
+  const clearN = Math.max(0, Math.floor(settings.clearLetters));
+  const fadeN = Math.max(0, Math.floor(settings.fadeLetters));
+  const fromEnd = length - 1 - index; // 0 = last char (leader tip)
+
+  if (fromEnd < clearN) return 0;
+  if (fadeN <= 0) return 1;
+  if (fromEnd >= clearN + fadeN) return 1;
+  return (fromEnd - clearN) / fadeN;
+}
+
+/** Cover opacity — same ramp as distance, capped at 80%. */
+export function composerVeilAlpha(
+  index: number,
+  length: number,
+  settings: AmnesiaSettings,
+): number {
+  return composerVeilProgress(index, length, settings) * 0.8;
+}
+
+/** Glyph blur in px — same distance axis as opacity, but starts later. */
+export function composerVeilBlurPx(
+  index: number,
+  length: number,
+  settings: AmnesiaSettings,
+): number {
+  const t = composerVeilProgress(index, length, settings);
+  // Cover begins immediately; blur waits until ~35% into the fade.
+  const blurStart = 0.35;
+  if (t <= blurStart) return 0;
+  const delayed = (t - blurStart) / (1 - blurStart);
+  return delayed * 2.2;
+}
+
+/** Split text into faded prefix + clear suffix (sealed = all mangled). */
 export function segmentAmnesia(
   text: string,
   settings: AmnesiaSettings,
@@ -74,33 +117,45 @@ export function segmentAmnesia(
     return [{ text, mangled: false }];
   }
 
-  const parts = text.split(/(\s+)/);
-  const wordIndexes: number[] = [];
-  for (let i = 0; i < parts.length; i++) {
-    if (parts[i] && !/^\s+$/.test(parts[i]!)) wordIndexes.push(i);
+  if (mode === "sealed") {
+    const rand = mulberry32(hashSeed(seed));
+    if (!scrambleLetters) {
+      return [{ text, mangled: true }];
+    }
+    const out = [...text]
+      .map((c) => scrambleChar(c, effective.scramble, rand))
+      .join("");
+    return [{ text: out, mangled: true }];
   }
 
-  const clearCount = Math.max(0, Math.floor(effective.clearWords));
-  const mangledWordCount = Math.max(0, wordIndexes.length - clearCount);
-  const mangledPartSet = new Set(wordIndexes.slice(0, mangledWordCount));
+  // Composer: letter windows — clear tail, then fade, then full veil
+  const clearN = Math.max(0, Math.floor(effective.clearLetters));
+  const fadeN = Math.max(0, Math.floor(effective.fadeLetters));
+  const veilEnd = Math.max(0, text.length - clearN); // exclusive end of veiled region
+  const fadeStart = Math.max(0, veilEnd - fadeN);
 
-  const rand = mulberry32(hashSeed(seed));
   const segments: AmnesiaSegment[] = [];
+  const push = (slice: string, mangled: boolean) => {
+    if (!slice) return;
+    segments.push({ text: slice, mangled });
+  };
 
-  for (let i = 0; i < parts.length; i++) {
-    const part = parts[i] ?? "";
-    if (!part) continue;
-    const isMangled = mangledPartSet.has(i);
-    if (isMangled) {
-      const out = scrambleLetters
-        ? [...part]
-            .map((c) => scrambleChar(c, effective.scramble, rand))
-            .join("")
-        : part;
-      segments.push({ text: out, mangled: true });
-    } else {
-      segments.push({ text: part, mangled: false });
-    }
+  push(text.slice(0, fadeStart), true); // fully veiled
+  push(text.slice(fadeStart, veilEnd), true); // fade zone (still “mangled” for markup)
+  push(text.slice(veilEnd), false); // clear
+
+  if (scrambleLetters) {
+    const rand = mulberry32(hashSeed(seed));
+    return segments.map((seg) =>
+      seg.mangled
+        ? {
+            ...seg,
+            text: [...seg.text]
+              .map((c) => scrambleChar(c, effective.scramble, rand))
+              .join(""),
+          }
+        : seg,
+    );
   }
 
   return segments;

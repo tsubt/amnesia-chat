@@ -9,15 +9,20 @@ import { mangleText } from "../lib/amnesia";
 import {
   DEFAULT_AMNESIA,
   newId,
+  normalizeSettings,
   type AmnesiaSettings,
   type AppFrame,
   type ChatMessage,
+  type DeliveryState,
   type Role,
   type ServerMessage,
 } from "../lib/protocol";
 import {
+  enqueueOutbox,
   loadHistory,
+  loadOutbox,
   loadSDisplay,
+  removeOutboxItem,
   saveHistory,
   saveSDisplay,
   saveSession,
@@ -40,6 +45,18 @@ type UseSessionOptions = {
   onCreated?: (info: { code: string; sessionKey: string }) => void;
 };
 
+function sealText(
+  text: string,
+  id: string,
+  settings: AmnesiaSettings,
+): string {
+  if (!settings.enabled) return text;
+  return mangleText(text, settings, id, {
+    mode: "sealed",
+    scrambleLetters: true,
+  });
+}
+
 export function useSession(opts: UseSessionOptions) {
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +76,7 @@ export function useSession(opts: UseSessionOptions) {
   const settingsRef = useRef(settings);
   const sessionKeyRef = useRef<string | null>(opts.sessionKey ?? null);
   const messagesRef = useRef<ChatMessage[]>([]);
+  const peerConnectedRef = useRef(false);
   const joinRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onCreatedRef = useRef(opts.onCreated);
   onCreatedRef.current = opts.onCreated;
@@ -83,6 +101,10 @@ export function useSession(opts: UseSessionOptions) {
     messagesRef.current = messages;
   }, [messages]);
 
+  useEffect(() => {
+    peerConnectedRef.current = peerConnected;
+  }, [peerConnected]);
+
   const clearJoinRetry = useCallback(() => {
     if (joinRetryRef.current) {
       clearTimeout(joinRetryRef.current);
@@ -94,82 +116,195 @@ export function useSession(opts: UseSessionOptions) {
     if (r === "d") {
       saveHistory(c, next);
     } else {
-      const safe = next.map((m) =>
-        m.from === "s"
-          ? {
-              ...m,
-              text: mangleText(m.plainText ?? m.text, settingsRef.current, m.id, {
-                mode: "sealed",
-                scrambleLetters: true,
-              }),
-              displayText: mangleText(
-                m.plainText ?? m.text,
-                settingsRef.current,
-                m.id,
-                { mode: "sealed", scrambleLetters: true },
-              ),
-              plainText: undefined,
-            }
-          : { ...m, plainText: undefined },
-      );
-      saveSDisplay(c, safe);
+      saveSDisplay(c, next);
     }
   }, []);
 
-  const appendMessage = useCallback(
-    (msg: ChatMessage) => {
+  const updateMessages = useCallback(
+    (updater: (prev: ChatMessage[]) => ChatMessage[]) => {
       setMessages((prev) => {
-        if (prev.some((m) => m.id === msg.id)) return prev;
-        const next = [...prev, msg];
+        const next = updater(prev);
         const r = roleRef.current;
         const c = codeRef.current;
         if (r && c) persistMessages(next, r, c);
+        messagesRef.current = next;
         return next;
       });
     },
     [persistMessages],
   );
 
+  const appendMessage = useCallback(
+    (msg: ChatMessage) => {
+      updateMessages((prev) => {
+        if (prev.some((m) => m.id === msg.id)) return prev;
+        return [...prev, msg];
+      });
+    },
+    [updateMessages],
+  );
+
+  const patchMessage = useCallback(
+    (id: string, patch: Partial<ChatMessage>) => {
+      updateMessages((prev) =>
+        prev.map((m) => (m.id === id ? { ...m, ...patch } : m)),
+      );
+    },
+    [updateMessages],
+  );
+
   const mergeHistory = useCallback(
     (
-      incoming: Array<{ id: string; from: Role; text: string; ts: number }>,
+      incoming: Array<{
+        id: string;
+        from: Role;
+        text: string;
+        ts: number;
+        sealedText?: string;
+        delivery?: DeliveryState;
+      }>,
     ) => {
       const r = roleRef.current;
       if (!r) return;
-      setMessages((prev) => {
+      updateMessages((prev) => {
         const byId = new Map(prev.map((m) => [m.id, m]));
+        const c = codeRef.current;
         for (const m of incoming) {
-          if (byId.has(m.id)) continue;
+          const existing = byId.get(m.id);
+          const historySealed =
+            Boolean(m.sealedText) ||
+            m.delivery === "sealed" ||
+            m.delivery === "revealed";
+
+          // Keep local in-flight unless history already carries a seal
+          if (
+            existing &&
+            (existing.delivery === "queued" ||
+              existing.delivery === "sent" ||
+              existing.delivery === "sealing") &&
+            !historySealed
+          ) {
+            continue;
+          }
+
           if (r === "s" && m.from === "s") {
-            const mangled = settingsRef.current.enabled
-              ? mangleText(m.text, settingsRef.current, m.id, {
-                  mode: "sealed",
-                  scrambleLetters: true,
-                })
-              : m.text;
+            const sealed = m.sealedText ?? m.text;
+            const revealed = m.delivery === "revealed";
             byId.set(m.id, {
               id: m.id,
               from: m.from,
-              text: mangled,
-              displayText: mangled,
+              text: revealed ? m.text : sealed,
+              sealedText: sealed,
+              delivery: revealed ? "revealed" : "sealed",
               ts: m.ts,
             });
+            if (c && historySealed) removeOutboxItem(c, m.id);
           } else {
             byId.set(m.id, {
               id: m.id,
               from: m.from,
               text: m.text,
+              sealedText: m.sealedText,
+              delivery: m.delivery,
               ts: m.ts,
             });
           }
         }
-        const next = [...byId.values()].sort((a, b) => a.ts - b.ts);
-        const c = codeRef.current;
-        if (c) persistMessages(next, r, c);
-        return next;
+        return [...byId.values()].sort((a, b) => a.ts - b.ts);
       });
     },
-    [persistMessages],
+    [updateMessages],
+  );
+
+  const sendRelay = useCallback(async (frame: AppFrame) => {
+    const ws = wsRef.current;
+    const key = cryptoKeyRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN || !key) return false;
+    const payload = await encryptPayload(key, JSON.stringify(frame));
+    ws.send(JSON.stringify({ type: "relay", payload }));
+    return true;
+  }, []);
+
+  const flushOutbox = useCallback(async () => {
+    const c = codeRef.current;
+    if (!c || roleRef.current !== "s") return;
+    if (!peerConnectedRef.current) return;
+    const items = loadOutbox(c);
+    for (const item of items) {
+      const ok = await sendRelay({
+        v: 1,
+        type: "chat",
+        id: item.id,
+        from: "s",
+        text: item.text,
+        ts: item.ts,
+      });
+      if (ok) {
+        patchMessage(item.id, { delivery: "sent" });
+      }
+    }
+  }, [patchMessage, sendRelay]);
+
+  const pushHistoryToPeer = useCallback(async () => {
+    const hist = messagesRef.current;
+    if (!hist.length) return;
+    await sendRelay({
+      v: 1,
+      type: "history",
+      messages: hist.map((m) => {
+        if (m.from === "s") {
+          const revealed = m.delivery === "revealed";
+          const sealed = m.sealedText ?? sealText(m.text, m.id, settingsRef.current);
+          return {
+            id: m.id,
+            from: m.from,
+            text: revealed ? m.text : sealed,
+            sealedText: sealed,
+            delivery: m.delivery === "revealed" ? "revealed" : "sealed",
+            ts: m.ts,
+          };
+        }
+        return {
+          id: m.id,
+          from: m.from,
+          text: m.text,
+          ts: m.ts,
+        };
+      }),
+      ts: Date.now(),
+    });
+  }, [sendRelay]);
+
+  const completeSeal = useCallback(
+    async (id: string) => {
+      const c = codeRef.current;
+      const msg = messagesRef.current.find((m) => m.id === id);
+      if (!msg) return;
+      const sealed = msg.sealedText ?? msg.text;
+      updateMessages((prev) =>
+        prev.map((m) =>
+          m.id === id
+            ? {
+                ...m,
+                text: sealed,
+                sealedText: sealed,
+                plainText: undefined,
+                delivery: "sealed",
+              }
+            : m,
+        ),
+      );
+      if (c) removeOutboxItem(c, id);
+      // Avoid duplicate acks if already sealed (e.g. history heal)
+      if (msg.delivery === "sealed") return;
+      await sendRelay({
+        v: 1,
+        type: "seal_ack",
+        id,
+        ts: Date.now(),
+      });
+    },
+    [sendRelay, updateMessages],
   );
 
   const handleAppFrame = useCallback(
@@ -179,11 +314,124 @@ export function useSession(opts: UseSessionOptions) {
 
       if (frame.type === "chat") {
         if (frame.from === r) return;
+
+        if (r === "d" && frame.from === "s") {
+          const sealed = sealText(frame.text, frame.id, settingsRef.current);
+          const amnesiaOn = settingsRef.current.enabled;
+          appendMessage({
+            id: frame.id,
+            from: frame.from,
+            text: frame.text,
+            sealedText: sealed,
+            delivery: amnesiaOn ? "sent" : "sealed",
+            ts: frame.ts,
+          });
+          void sendRelay({
+            v: 1,
+            type: "sealed",
+            id: frame.id,
+            sealedText: sealed,
+            ts: Date.now(),
+          });
+          return;
+        }
+
+        // S receives D chat — clear
         appendMessage({
           id: frame.id,
           from: frame.from,
           text: frame.text,
           ts: frame.ts,
+        });
+        return;
+      }
+
+      if (frame.type === "sealed") {
+        if (r !== "s") return;
+        const existing = messagesRef.current.find((m) => m.id === frame.id);
+        const plain = existing?.plainText;
+        const amnesiaOn = settingsRef.current.enabled;
+        const sealed = frame.sealedText;
+
+        // Drop outbox as soon as D's sealed form is known (plaintext only
+        // remains in memory for the letter-swap animation).
+        const c = codeRef.current;
+        if (c) removeOutboxItem(c, frame.id);
+
+        if (!amnesiaOn || !plain || plain === sealed) {
+          updateMessages((prev) => {
+            const has = prev.some((m) => m.id === frame.id);
+            if (has) {
+              return prev.map((m) =>
+                m.id === frame.id
+                  ? {
+                      ...m,
+                      text: sealed,
+                      sealedText: sealed,
+                      plainText: undefined,
+                      delivery: "sealed",
+                    }
+                  : m,
+              );
+            }
+            return [
+              ...prev,
+              {
+                id: frame.id,
+                from: "s" as const,
+                text: sealed,
+                sealedText: sealed,
+                delivery: "sealed" as const,
+                ts: frame.ts,
+              },
+            ];
+          });
+          void sendRelay({
+            v: 1,
+            type: "seal_ack",
+            id: frame.id,
+            ts: Date.now(),
+          });
+          return;
+        }
+
+        updateMessages((prev) =>
+          prev.map((m) =>
+            m.id === frame.id
+              ? {
+                  ...m,
+                  sealedText: sealed,
+                  delivery: "sealing",
+                }
+              : m,
+          ),
+        );
+        return;
+      }
+
+      if (frame.type === "seal_ack") {
+        if (r !== "d") return;
+        patchMessage(frame.id, { delivery: "sealed" });
+        return;
+      }
+
+      if (frame.type === "reveal") {
+        if (r !== "s") return;
+        patchMessage(frame.id, {
+          text: frame.text,
+          plainText: undefined,
+          delivery: "revealed",
+        });
+        return;
+      }
+
+      if (frame.type === "reseal") {
+        if (r !== "s") return;
+        patchMessage(frame.id, {
+          text: frame.sealedText,
+          sealedText: frame.sealedText,
+          plainText: undefined,
+          delivery: "sealed",
         });
         return;
       }
@@ -194,8 +442,9 @@ export function useSession(opts: UseSessionOptions) {
       }
 
       if (frame.type === "settings") {
-        setSettings(frame.settings);
-        settingsRef.current = frame.settings;
+        const next = normalizeSettings(frame.settings);
+        setSettings(next);
+        settingsRef.current = next;
         const c = codeRef.current;
         const key = sessionKeyRef.current;
         if (c && r && key) {
@@ -203,26 +452,7 @@ export function useSession(opts: UseSessionOptions) {
             code: c,
             role: r,
             sessionKey: key,
-            settings: frame.settings,
-          });
-        }
-        if (r === "s") {
-          setMessages((prev) => {
-            const next = prev.map((m) => {
-              if (m.from !== "s" || !m.plainText) return m;
-              return {
-                ...m,
-                displayText: frame.settings.enabled
-                  ? mangleText(m.plainText, frame.settings, m.id, {
-                      mode: "sealed",
-                      scrambleLetters: true,
-                    })
-                  : m.plainText,
-              };
-            });
-            const c2 = codeRef.current;
-            if (c2) persistMessages(next, "s", c2);
-            return next;
+            settings: next,
           });
         }
         return;
@@ -230,35 +460,11 @@ export function useSession(opts: UseSessionOptions) {
 
       if (frame.type === "presence" && frame.event === "ready") {
         setPeerConnected(true);
+        peerConnectedRef.current = true;
       }
     },
-    [appendMessage, mergeHistory, persistMessages],
+    [appendMessage, mergeHistory, patchMessage, sendRelay, updateMessages],
   );
-
-  const sendRelay = useCallback(async (frame: AppFrame) => {
-    const ws = wsRef.current;
-    const key = cryptoKeyRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN || !key) return;
-    const payload = await encryptPayload(key, JSON.stringify(frame));
-    ws.send(JSON.stringify({ type: "relay", payload }));
-  }, []);
-
-  const pushHistoryToPeer = useCallback(async () => {
-    const hist = messagesRef.current;
-    if (!hist.length) return;
-    // Prefer canonical plaintext for S lines when D still has it in-memory.
-    await sendRelay({
-      v: 1,
-      type: "history",
-      messages: hist.map((m) => ({
-        id: m.id,
-        from: m.from,
-        text: m.plainText ?? m.text,
-        ts: m.ts,
-      })),
-      ts: Date.now(),
-    });
-  }, [sendRelay]);
 
   const connect = useCallback(() => {
     if (opts.mode === "none") return;
@@ -383,9 +589,27 @@ export function useSession(opts: UseSessionOptions) {
             setMessages(hist);
             setStatus("waiting");
           } else {
-            const hist = loadSDisplay(msg.code);
-            messagesRef.current = hist;
-            setMessages(hist);
+            const sealed = loadSDisplay(msg.code);
+            const outbox = loadOutbox(msg.code);
+            const byId = new Map(sealed.map((m) => [m.id, m]));
+            // Drop outbox rows already sealed in localStorage (privacy)
+            for (const item of outbox) {
+              if (byId.has(item.id)) {
+                removeOutboxItem(msg.code, item.id);
+                continue;
+              }
+              byId.set(item.id, {
+                id: item.id,
+                from: "s",
+                text: item.text,
+                plainText: item.text,
+                delivery: "queued",
+                ts: item.ts,
+              });
+            }
+            const merged = [...byId.values()].sort((a, b) => a.ts - b.ts);
+            messagesRef.current = merged;
+            setMessages(merged);
             setStatus("connected");
           }
           break;
@@ -394,6 +618,7 @@ export function useSession(opts: UseSessionOptions) {
           clearJoinRetry();
           setError(null);
           setPeerConnected(true);
+          peerConnectedRef.current = true;
           setStatus("connected");
           if (roleRef.current === "d") {
             void (async () => {
@@ -413,17 +638,21 @@ export function useSession(opts: UseSessionOptions) {
               await pushHistoryToPeer();
             })();
           } else {
-            void sendRelay({
-              v: 1,
-              type: "presence",
-              event: "ready",
-              role: "s",
-              ts: Date.now(),
-            });
+            void (async () => {
+              await sendRelay({
+                v: 1,
+                type: "presence",
+                event: "ready",
+                role: "s",
+                ts: Date.now(),
+              });
+              await flushOutbox();
+            })();
           }
           break;
         case "peer_left":
           setPeerConnected(false);
+          peerConnectedRef.current = false;
           setStatus("waiting");
           break;
         case "relay": {
@@ -442,6 +671,21 @@ export function useSession(opts: UseSessionOptions) {
           break;
         }
         case "error":
+          if (msg.message === "Peer not connected") {
+            // Soft: S messages stay queued; do not hard-error the session.
+            if (roleRef.current === "s") {
+              updateMessages((prev) =>
+                prev.map((m) =>
+                  m.from === "s" &&
+                  (m.delivery === "sent" || !m.delivery) &&
+                  m.plainText
+                    ? { ...m, delivery: "queued" }
+                    : m,
+                ),
+              );
+            }
+            break;
+          }
           if (
             msg.message === "Room not found" &&
             (opts.mode === "join" ||
@@ -465,6 +709,7 @@ export function useSession(opts: UseSessionOptions) {
       clearJoinRetry();
       setStatus((s) => (s === "error" ? s : "closed"));
       setPeerConnected(false);
+      peerConnectedRef.current = false;
     };
 
     ws.onerror = () => {
@@ -481,7 +726,9 @@ export function useSession(opts: UseSessionOptions) {
     handleAppFrame,
     sendRelay,
     pushHistoryToPeer,
+    flushOutbox,
     clearJoinRetry,
+    updateMessages,
   ]);
 
   useEffect(() => {
@@ -510,41 +757,87 @@ export function useSession(opts: UseSessionOptions) {
       if (!r) return;
       const id = newId();
       const ts = Date.now();
-      const frame: AppFrame = {
-        v: 1,
-        type: "chat",
-        id,
-        from: r,
-        text: trimmed,
-        ts,
-      };
+      const c = codeRef.current;
 
       if (r === "d") {
         appendMessage({ id, from: r, text: trimmed, ts });
-      } else {
-        const mangled = settingsRef.current.enabled
-          ? mangleText(trimmed, settingsRef.current, id, {
-              mode: "sealed",
-              scrambleLetters: true,
-            })
-          : trimmed;
-        appendMessage({
+        await sendRelay({
+          v: 1,
+          type: "chat",
           id,
           from: r,
-          text: mangled,
-          displayText: mangled,
-          plainText: trimmed,
+          text: trimmed,
           ts,
         });
+        return;
       }
 
-      await sendRelay(frame);
+      // S: queue locally; flush when peer is up
+      if (c) {
+        enqueueOutbox(c, { id, text: trimmed, ts });
+      }
+      const canSend = peerConnectedRef.current;
+      appendMessage({
+        id,
+        from: r,
+        text: trimmed,
+        plainText: trimmed,
+        delivery: canSend ? "sent" : "queued",
+        ts,
+      });
+
+      if (canSend) {
+        const ok = await sendRelay({
+          v: 1,
+          type: "chat",
+          id,
+          from: r,
+          text: trimmed,
+          ts,
+        });
+        if (!ok) {
+          patchMessage(id, { delivery: "queued" });
+        }
+      }
     },
-    [appendMessage, sendRelay],
+    [appendMessage, patchMessage, sendRelay],
+  );
+
+  const toggleReveal = useCallback(
+    async (id: string) => {
+      if (roleRef.current !== "d") return;
+      const msg = messagesRef.current.find((m) => m.id === id);
+      if (!msg || msg.from !== "s") return;
+      if (!settingsRef.current.enabled) return;
+
+      if (msg.delivery === "revealed") {
+        const sealed =
+          msg.sealedText ?? sealText(msg.text, msg.id, settingsRef.current);
+        patchMessage(id, { delivery: "sealed", sealedText: sealed });
+        await sendRelay({
+          v: 1,
+          type: "reseal",
+          id,
+          sealedText: sealed,
+          ts: Date.now(),
+        });
+      } else if (msg.delivery === "sealed") {
+        patchMessage(id, { delivery: "revealed" });
+        await sendRelay({
+          v: 1,
+          type: "reveal",
+          id,
+          text: msg.text,
+          ts: Date.now(),
+        });
+      }
+    },
+    [patchMessage, sendRelay],
   );
 
   const updateSettings = useCallback(
     async (next: AmnesiaSettings) => {
+      next = normalizeSettings(next);
       setSettings(next);
       settingsRef.current = next;
       const c = codeRef.current;
@@ -576,6 +869,8 @@ export function useSession(opts: UseSessionOptions) {
     sessionKeyStr,
     sendChat,
     updateSettings,
+    toggleReveal,
+    completeSeal,
     reconnect: connect,
   };
 }

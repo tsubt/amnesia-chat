@@ -72,7 +72,7 @@ export function Composer({ role, settings, disabled, onSend }: Props) {
               />
             ) : (
               <span className="composer-placeholder">
-                Let thoughts arrive… older words will fade
+                Let thoughts arrive… older letters cover over
               </span>
             )}
           </div>
