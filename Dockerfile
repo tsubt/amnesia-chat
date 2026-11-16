@@ -4,12 +4,12 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/
 COPY apps/server/package.json apps/server/
-RUN npm ci
+RUN bun install --frozen-lockfile
 
 FROM deps AS build
 COPY . .
 # Same-origin WS in production — leave VITE_WS_URL unset.
-RUN npm run build --workspace web
+RUN bun run build
 
 FROM oven/bun:1.3 AS runner
 WORKDIR /app

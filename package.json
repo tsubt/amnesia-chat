@@ -7,7 +7,7 @@
   "scripts": {
     "dev:web": "npm run dev --workspace web",
     "dev:server": "npm run dev --workspace @amnesia-chat/server",
-    "build": "npm run build --workspace web",
+    "build": "bun run --cwd apps/web build",
     "start": "bun run apps/server/src/index.ts",
     "start:server": "bun run apps/server/src/index.ts"
   }
