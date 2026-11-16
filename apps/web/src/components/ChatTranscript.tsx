@@ -10,14 +10,17 @@ type Props = {
 };
 
 export function ChatTranscript({ messages, role, settings }: Props) {
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = scrollerRef.current;
+    if (!el) return;
+    // Scroll only the transcript pane — never the document (avoids mobile jump).
+    el.scrollTop = el.scrollHeight;
   }, [messages.length]);
 
   return (
-    <div className="transcript" role="log" aria-live="polite">
+    <div className="transcript" role="log" aria-live="polite" ref={scrollerRef}>
       {messages.length === 0 && (
         <p className="transcript-empty">No messages yet. Start typing.</p>
       )}
@@ -67,7 +70,6 @@ export function ChatTranscript({ messages, role, settings }: Props) {
           </article>
         );
       })}
-      <div ref={bottomRef} />
     </div>
   );
 }

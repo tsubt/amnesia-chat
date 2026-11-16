@@ -25,11 +25,13 @@
 html,
 body,
 #root {
-  min-height: 100%;
+  height: 100%;
+  height: 100dvh;
+  margin: 0;
+  overflow: hidden;
 }
 
 body {
-  margin: 0;
   color: var(--ink);
   font-family: var(--font-body);
   background:
@@ -88,11 +90,11 @@ a {
 /* Landing */
 .landing {
   position: relative;
-  min-height: 100dvh;
+  height: 100%;
   display: grid;
   place-items: center;
   padding: 2rem;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .landing-atmosphere {
@@ -190,19 +192,25 @@ a {
   background: white;
 }
 
-/* Session */
+/* Session — locked to viewport; only .transcript scrolls */
 .session {
-  min-height: 100dvh;
+  height: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
   display: grid;
-  grid-template-rows: auto auto 1fr;
-  padding: 1rem clamp(1rem, 3vw, 2rem) 1.5rem;
-  gap: 0.75rem;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  padding: 0.75rem clamp(0.75rem, 3vw, 2rem);
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  gap: 0.5rem;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .session-loading {
   place-items: center;
   text-align: center;
   align-content: center;
+  overflow: auto;
 }
 
 .session-top {
@@ -272,24 +280,29 @@ a {
 
 .session-layout {
   display: grid;
-  gap: 1rem;
+  gap: 0.75rem;
   min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 .session-layout.with-side {
   grid-template-columns: minmax(0, 1fr) minmax(240px, 300px);
+  grid-template-rows: minmax(0, 1fr);
 }
 
 @media (max-width: 860px) {
   .session-layout.with-side {
     grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) auto;
   }
 }
 
 .chat-panel {
   display: grid;
-  grid-template-rows: 1fr auto;
-  min-height: 60dvh;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+  height: 100%;
   border: 1px solid var(--line);
   border-radius: calc(var(--radius) + 4px);
   background: color-mix(in oklab, white 78%, transparent);
@@ -298,7 +311,11 @@ a {
 }
 
 .transcript {
-  overflow: auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   padding: 1.1rem 1.1rem 0.5rem;
   display: flex;
   flex-direction: column;
@@ -370,8 +387,9 @@ a {
 
 .composer-field textarea {
   width: 100%;
-  resize: vertical;
-  min-height: 4.5rem;
+  resize: none;
+  min-height: 3.2rem;
+  max-height: 8rem;
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 0.75rem 0.85rem;
@@ -419,9 +437,72 @@ a {
 }
 
 .side-panel {
+  min-height: 0;
   display: grid;
-  gap: 1rem;
   align-content: start;
+}
+
+.side-drawer {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: color-mix(in oklab, white 75%, transparent);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.side-drawer > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.75rem 1rem;
+  font-family: var(--font-display);
+  font-weight: 650;
+  font-size: 1.05rem;
+  user-select: none;
+}
+
+.side-drawer > summary::-webkit-details-marker {
+  display: none;
+}
+
+.side-drawer-body {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0 0.75rem 0.75rem;
+  max-height: min(50dvh, 420px);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+@media (min-width: 861px) {
+  .side-drawer {
+    border: none;
+    background: transparent;
+    box-shadow: none;
+    height: 100%;
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+
+  .side-drawer > summary {
+    display: none;
+  }
+
+  .side-drawer-body {
+    max-height: none;
+    padding: 0;
+    overflow: visible;
+    gap: 1rem;
+  }
+}
+
+@media (max-width: 860px) {
+  .composer-hint {
+    display: none;
+  }
+
+  .side-drawer:not([open]) {
+    /* Collapsed: just the summary chip so chat keeps the viewport */
+  }
 }
 
 .share,

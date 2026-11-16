@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { AmnesiaControls } from "../components/AmnesiaControls";
 import { ChatTranscript } from "../components/ChatTranscript";
@@ -18,6 +18,18 @@ export function Session({ mode, rejoinRole = "d" }: Props) {
   const { code: codeParam } = useParams();
   const [search] = useSearchParams();
   const keyFromUrl = readInviteKey(search);
+  const sideRef = useRef<HTMLDetailsElement>(null);
+
+  // Desktop: keep invite panel open. Mobile: collapsed so chat fills the viewport.
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 861px)");
+    const sync = () => {
+      if (sideRef.current) sideRef.current.open = mq.matches;
+    };
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
 
   // Update the URL without remounting so the create socket stays D.
   const onCreated = useCallback(
@@ -109,8 +121,16 @@ export function Session({ mode, rejoinRole = "d" }: Props) {
 
         {role === "d" && sessionKeyStr && (
           <aside className="side-panel">
-            <SharePanel code={code} sessionKey={sessionKeyStr} />
-            <AmnesiaControls settings={settings} onChange={(s) => void updateSettings(s)} />
+            <details className="side-drawer" ref={sideRef}>
+              <summary>Invite &amp; amnesia</summary>
+              <div className="side-drawer-body">
+                <SharePanel code={code} sessionKey={sessionKeyStr} />
+                <AmnesiaControls
+                  settings={settings}
+                  onChange={(s) => void updateSettings(s)}
+                />
+              </div>
+            </details>
           </aside>
         )}
       </div>
