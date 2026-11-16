@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 
 const PORT = Number(process.env.PORT ?? 8787);
-const MAX_PAYLOAD = 64_000;
+const MAX_PAYLOAD = 256_000;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const STATIC_DIR = process.env.STATIC_DIR
@@ -39,6 +39,10 @@ const rooms = new Map<string, Room>();
 const clients = new WeakMap<WebSocket, ClientMeta>();
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function isValidCode(code: string): boolean {
+  return code.length >= 4 && code.length <= 12 && [...code].every((c) => CODE_ALPHABET.includes(c));
+}
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -139,9 +143,25 @@ function joinRoom(ws: WebSocket, codeRaw: string) {
 function rejoinRoom(ws: WebSocket, codeRaw: string, role: Role) {
   detach(ws);
   const code = codeRaw.trim().toUpperCase();
-  const room = rooms.get(code);
+  if (!isValidCode(code)) {
+    send(ws, { type: "error", message: "Invalid room code" });
+    return;
+  }
+
+  let room = rooms.get(code);
+
+  // After a server restart the in-memory room is gone. D can reclaim the code;
+  // S must wait until D is back.
   if (!room) {
-    send(ws, { type: "error", message: "Room not found" });
+    if (role !== "d") {
+      send(ws, { type: "error", message: "Room not found" });
+      return;
+    }
+    const now = Date.now();
+    room = { code, d: ws, createdAt: now, lastActive: now };
+    rooms.set(code, room);
+    clients.set(ws, { roomCode: code, role: "d" });
+    send(ws, { type: "joined", code, role: "d" });
     return;
   }
 

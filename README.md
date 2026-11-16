@@ -45,7 +45,7 @@ One service serves the SPA and the WebSocket relay on the same `PORT` (see `Dock
 - Railway sets `PORT`; the container listens on `0.0.0.0:$PORT`
 - Optional: set `STATIC_DIR` if the UI build lives somewhere else
 
-Rooms live in memory. Empty rooms are removed; idle rooms with no sockets expire after 2h. D’s plaintext history is in `localStorage`. S only caches mangled display text. The invite key in `#k=` is not sent to HTTP servers as a query string.
+Rooms live in memory on the relay (lost on restart). D can **reclaim** the same room code after a restart; when S reconnects, D pushes local chat history over the encrypted channel. D’s plaintext history is in `localStorage`; S only caches mangled display text.
 
 ## Scope
 

@@ -42,6 +42,17 @@ export type AppFrame =
     }
   | {
       v: 1;
+      type: "history";
+      messages: Array<{
+        id: string;
+        from: Role;
+        text: string;
+        ts: number;
+      }>;
+      ts: number;
+    }
+  | {
+      v: 1;
       type: "draft";
       from: Role;
       text: string;

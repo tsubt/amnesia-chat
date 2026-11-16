@@ -58,6 +58,8 @@ export function useSession(opts: UseSessionOptions) {
   const codeRef = useRef<string | null>(opts.code ?? null);
   const settingsRef = useRef(settings);
   const sessionKeyRef = useRef<string | null>(opts.sessionKey ?? null);
+  const messagesRef = useRef<ChatMessage[]>([]);
+  const joinRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onCreatedRef = useRef(opts.onCreated);
   onCreatedRef.current = opts.onCreated;
 
@@ -76,6 +78,17 @@ export function useSession(opts: UseSessionOptions) {
   useEffect(() => {
     sessionKeyRef.current = sessionKeyStr;
   }, [sessionKeyStr]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  const clearJoinRetry = useCallback(() => {
+    if (joinRetryRef.current) {
+      clearTimeout(joinRetryRef.current);
+      joinRetryRef.current = null;
+    }
+  }, []);
 
   const persistMessages = useCallback((next: ChatMessage[], r: Role, c: string) => {
     if (r === "d") {
@@ -117,6 +130,48 @@ export function useSession(opts: UseSessionOptions) {
     [persistMessages],
   );
 
+  const mergeHistory = useCallback(
+    (
+      incoming: Array<{ id: string; from: Role; text: string; ts: number }>,
+    ) => {
+      const r = roleRef.current;
+      if (!r) return;
+      setMessages((prev) => {
+        const byId = new Map(prev.map((m) => [m.id, m]));
+        for (const m of incoming) {
+          if (byId.has(m.id)) continue;
+          if (r === "s" && m.from === "s") {
+            const mangled = settingsRef.current.enabled
+              ? mangleText(m.text, settingsRef.current, m.id, {
+                  mode: "sealed",
+                  scrambleLetters: true,
+                })
+              : m.text;
+            byId.set(m.id, {
+              id: m.id,
+              from: m.from,
+              text: mangled,
+              displayText: mangled,
+              ts: m.ts,
+            });
+          } else {
+            byId.set(m.id, {
+              id: m.id,
+              from: m.from,
+              text: m.text,
+              ts: m.ts,
+            });
+          }
+        }
+        const next = [...byId.values()].sort((a, b) => a.ts - b.ts);
+        const c = codeRef.current;
+        if (c) persistMessages(next, r, c);
+        return next;
+      });
+    },
+    [persistMessages],
+  );
+
   const handleAppFrame = useCallback(
     (frame: AppFrame) => {
       const r = roleRef.current;
@@ -130,6 +185,11 @@ export function useSession(opts: UseSessionOptions) {
           text: frame.text,
           ts: frame.ts,
         });
+        return;
+      }
+
+      if (frame.type === "history") {
+        mergeHistory(frame.messages);
         return;
       }
 
@@ -172,7 +232,7 @@ export function useSession(opts: UseSessionOptions) {
         setPeerConnected(true);
       }
     },
-    [appendMessage, persistMessages],
+    [appendMessage, mergeHistory, persistMessages],
   );
 
   const sendRelay = useCallback(async (frame: AppFrame) => {
@@ -183,8 +243,26 @@ export function useSession(opts: UseSessionOptions) {
     ws.send(JSON.stringify({ type: "relay", payload }));
   }, []);
 
+  const pushHistoryToPeer = useCallback(async () => {
+    const hist = messagesRef.current;
+    if (!hist.length) return;
+    // Prefer canonical plaintext for S lines when D still has it in-memory.
+    await sendRelay({
+      v: 1,
+      type: "history",
+      messages: hist.map((m) => ({
+        id: m.id,
+        from: m.from,
+        text: m.plainText ?? m.text,
+        ts: m.ts,
+      })),
+      ts: Date.now(),
+    });
+  }, [sendRelay]);
+
   const connect = useCallback(() => {
     if (opts.mode === "none") return;
+    clearJoinRetry();
 
     if (
       (opts.mode === "join" || opts.mode === "rejoin") &&
@@ -217,6 +295,24 @@ export function useSession(opts: UseSessionOptions) {
     let opened = false;
 
     const isCurrent = () => wsRef.current === ws;
+
+    const scheduleJoinRetry = () => {
+      clearJoinRetry();
+      joinRetryRef.current = setTimeout(() => {
+        if (!isCurrent() || ws.readyState !== WebSocket.OPEN) return;
+        if (opts.mode === "join" && opts.code) {
+          ws.send(JSON.stringify({ type: "join", code: opts.code }));
+        } else if (opts.mode === "rejoin" && opts.code && opts.rejoinRole === "s") {
+          ws.send(
+            JSON.stringify({
+              type: "rejoin",
+              code: opts.code,
+              role: "s",
+            }),
+          );
+        }
+      }, 2000);
+    };
 
     ws.onopen = () => {
       if (!isCurrent()) return;
@@ -263,6 +359,7 @@ export function useSession(opts: UseSessionOptions) {
       switch (msg.type) {
         case "created":
         case "joined": {
+          clearJoinRetry();
           setError(null);
           setCode(msg.code);
           setRole(msg.role);
@@ -281,33 +378,40 @@ export function useSession(opts: UseSessionOptions) {
           }
 
           if (msg.role === "d") {
-            setMessages(loadHistory(msg.code));
+            const hist = loadHistory(msg.code);
+            messagesRef.current = hist;
+            setMessages(hist);
             setStatus("waiting");
           } else {
-            // Loaded history is already mangled (no plaintext)
-            setMessages(loadSDisplay(msg.code));
+            const hist = loadSDisplay(msg.code);
+            messagesRef.current = hist;
+            setMessages(hist);
             setStatus("connected");
           }
           break;
         }
         case "peer_joined":
+          clearJoinRetry();
           setError(null);
           setPeerConnected(true);
           setStatus("connected");
           if (roleRef.current === "d") {
-            void sendRelay({
-              v: 1,
-              type: "settings",
-              settings: settingsRef.current,
-              ts: Date.now(),
-            });
-            void sendRelay({
-              v: 1,
-              type: "presence",
-              event: "ready",
-              role: "d",
-              ts: Date.now(),
-            });
+            void (async () => {
+              await sendRelay({
+                v: 1,
+                type: "settings",
+                settings: settingsRef.current,
+                ts: Date.now(),
+              });
+              await sendRelay({
+                v: 1,
+                type: "presence",
+                event: "ready",
+                role: "d",
+                ts: Date.now(),
+              });
+              await pushHistoryToPeer();
+            })();
           } else {
             void sendRelay({
               v: 1,
@@ -338,6 +442,16 @@ export function useSession(opts: UseSessionOptions) {
           break;
         }
         case "error":
+          if (
+            msg.message === "Room not found" &&
+            (opts.mode === "join" ||
+              (opts.mode === "rejoin" && opts.rejoinRole === "s"))
+          ) {
+            setError("Waiting for D to reopen the room…");
+            setStatus("waiting");
+            scheduleJoinRetry();
+            break;
+          }
           setError(msg.message);
           setStatus("error");
           break;
@@ -348,12 +462,12 @@ export function useSession(opts: UseSessionOptions) {
 
     ws.onclose = () => {
       if (!isCurrent()) return;
+      clearJoinRetry();
       setStatus((s) => (s === "error" ? s : "closed"));
       setPeerConnected(false);
     };
 
     ws.onerror = () => {
-      // Ignore errors from sockets we intentionally replaced/closed (StrictMode, reconnect).
       if (!isCurrent()) return;
       if (opened) return;
       setError("Connection failed — is the relay running?");
@@ -366,12 +480,15 @@ export function useSession(opts: UseSessionOptions) {
     opts.rejoinRole,
     handleAppFrame,
     sendRelay,
+    pushHistoryToPeer,
+    clearJoinRetry,
   ]);
 
   useEffect(() => {
     if (opts.mode === "none") return;
     connect();
     return () => {
+      clearJoinRetry();
       const ws = wsRef.current;
       wsRef.current = null;
       if (ws) {
