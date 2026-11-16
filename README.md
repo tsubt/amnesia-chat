@@ -65,3 +65,4 @@ Rooms live in memory. Empty rooms are removed; idle rooms with no sockets expire
 **Now (A):** join via code/QR, chat, S amnesia, D controls, local history, encrypted relay.
 
 **Later (B):** live-stream S’s composer to D; auto-flush draft when D sends.
+# amnesia-chat
