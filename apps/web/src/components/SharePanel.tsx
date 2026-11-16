@@ -40,7 +40,7 @@ export function SharePanel({ code, sessionKey }: Props) {
         <QRCodeSVG value={joinUrl} size={148} bgColor="transparent" fgColor="currentColor" />
       </div>
       <p className="share-note">
-        Scan or open the link to join. The encryption key stays in the link fragment.
+        Scan or open the link to join (both of you must be on this same public URL, not localhost).
       </p>
     </section>
   );
