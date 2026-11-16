@@ -1,0 +1,13 @@
+{
+  "name": "amnesia-chat",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace web",
+    "dev:server": "npm run dev --workspace @amnesia-chat/server",
+    "build": "npm run build --workspace web",
+    "start:server": "npm run start --workspace @amnesia-chat/server"
+  }
+}

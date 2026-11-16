@@ -1,0 +1,17 @@
+{
+  "name": "@amnesia-chat/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.20",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.2"
+  }
+}
