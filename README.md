@@ -35,30 +35,17 @@ Refreshing as D uses `/session/:CODE#k=...` and rejoins the same room if it stil
 - `presence` — peer ready  
 - reserved for later: `draft`, `draft_flush` (live typing)
 
-## Deploy (tiny footprint)
+## Deploy (Railway)
 
-The relay needs no database and typically tens of MB of RAM.
+One service serves the SPA and the WebSocket relay on the same `PORT` (see `Dockerfile` + `railway.toml`).
 
-**Server (example: Railway / Fly / Render)**
+**Dashboard:** New Project → Deploy from GitHub repo `tsubt/amnesia-chat` → Railway picks up `railway.toml` / `Dockerfile`. Generate a public domain on the service.
 
-1. Deploy `apps/server` with start command: `bun run src/index.ts` (or `npm start` after installing Bun/Node)
-2. Set `PORT` from the host (default `8787`)
-3. Ensure WebSocket support is enabled
+- Leave `VITE_WS_URL` unset so the client uses same-origin `wss://`
+- Railway sets `PORT`; the container listens on `0.0.0.0:$PORT`
+- Optional: set `STATIC_DIR` if the UI build lives somewhere else
 
-**Web**
-
-1. Build: `npm run build` (from repo root or `apps/web`)
-2. Host `apps/web/dist` on any static host
-3. Set `VITE_WS_URL=wss://your-relay.example.com` at build time
-
-Example:
-
-```bash
-cd apps/web
-VITE_WS_URL=wss://amnesia-relay.up.railway.app npm run build
-```
-
-Rooms live in memory. Empty rooms are removed; idle rooms with no sockets expire after 24h. D’s plaintext history is in `localStorage`. S only caches mangled display text. The invite key in `#k=` is not sent to static hosts as a query string.
+Rooms live in memory. Empty rooms are removed; idle rooms with no sockets expire after 2h. D’s plaintext history is in `localStorage`. S only caches mangled display text. The invite key in `#k=` is not sent to HTTP servers as a query string.
 
 ## Scope
 

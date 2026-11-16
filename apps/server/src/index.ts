@@ -1,7 +1,17 @@
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const MAX_PAYLOAD = 64_000;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const STATIC_DIR = process.env.STATIC_DIR
+  ? path.resolve(process.env.STATIC_DIR)
+  : path.resolve(__dirname, "../../../web/dist");
 
 type Role = "d" | "s";
 
@@ -29,6 +39,21 @@ const rooms = new Map<string, Room>();
 const clients = new WeakMap<WebSocket, ClientMeta>();
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+const MIME: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".ico": "image/x-icon",
+  ".json": "application/json",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+};
 
 function randomCode(length = 6): string {
   let out = "";
@@ -64,7 +89,6 @@ function detach(ws: WebSocket) {
   if (peer) {
     send(peer, { type: "peer_left", role: meta.role });
   }
-  // Keep empty rooms for a while so D can refresh / rejoin.
 }
 
 function slotOpen(ws: WebSocket | undefined): boolean {
@@ -174,7 +198,54 @@ function relay(ws: WebSocket, payload: string) {
   send(peer, { type: "relay", from: meta.role, payload });
 }
 
-const wss = new WebSocketServer({ port: PORT });
+function safeJoin(root: string, urlPath: string): string | null {
+  const decoded = decodeURIComponent(urlPath.split("?")[0] ?? "/");
+  const cleaned = path.normalize(decoded).replace(/^(\.\.[/\\])+/, "");
+  const full = path.join(root, cleaned);
+  if (!full.startsWith(root)) return null;
+  return full;
+}
+
+async function serveStatic(req: IncomingMessage, res: ServerResponse) {
+  if (!existsSync(STATIC_DIR)) {
+    res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end(
+      `Amnesia Chat relay OK (no static UI at ${STATIC_DIR}). Connect via WebSocket.`,
+    );
+    return;
+  }
+
+  const urlPath = req.url ?? "/";
+  let filePath = safeJoin(STATIC_DIR, urlPath === "/" ? "/index.html" : urlPath);
+  if (!filePath) {
+    res.writeHead(400).end("Bad path");
+    return;
+  }
+
+  if (!existsSync(filePath) || !path.extname(filePath)) {
+    // SPA fallback for /join/:code, /session/:code, etc.
+    filePath = path.join(STATIC_DIR, "index.html");
+  }
+
+  try {
+    const data = await readFile(filePath);
+    const ext = path.extname(filePath);
+    res.writeHead(200, {
+      "Content-Type": MIME[ext] ?? "application/octet-stream",
+      "Cache-Control":
+        ext === ".html" ? "no-cache" : "public, max-age=31536000, immutable",
+    });
+    res.end(data);
+  } catch {
+    res.writeHead(404).end("Not found");
+  }
+}
+
+const server = createServer((req, res) => {
+  void serveStatic(req, res);
+});
+
+const wss = new WebSocketServer({ server });
 
 wss.on("connection", (ws) => {
   send(ws, { type: "hello", serverTime: Date.now() });
@@ -217,7 +288,6 @@ wss.on("connection", (ws) => {
   ws.on("error", () => detach(ws));
 });
 
-// Remove rooms with no open sockets after 2h idle (active rooms never expire)
 const EMPTY_TTL_MS = 2 * 60 * 60 * 1000;
 setInterval(() => {
   const now = Date.now();
@@ -229,4 +299,9 @@ setInterval(() => {
   }
 }, 60_000).unref();
 
-console.log(`Amnesia Chat relay listening on ws://localhost:${PORT}`);
+server.listen(PORT, "0.0.0.0", () => {
+  const hasUi = existsSync(STATIC_DIR);
+  console.log(
+    `Amnesia Chat listening on :${PORT} (ws + ${hasUi ? `static ${STATIC_DIR}` : "relay only"})`,
+  );
+});
